@@ -1,0 +1,18 @@
+INFO: [SIM 2] *************** CSIM start ***************
+INFO: [SIM 4] CSIM will launch CLANG as the compiler.
+make[1]: Entering directory '/home/cs2401.03/mini1-gemm/build/hls/hls/csim/build'
+make[1]: 'csim.exe' is up to date.
+make[1]: Leaving directory '/home/cs2401.03/mini1-gemm/build/hls/hls/csim/build'
+=== kernel_tb (full: target shapes) ===
+  M=288    K=288  N=1    PASS  max|err|=5.23e-06
+  M=288    K=288  N=32   PASS  max|err|=1.04e-05
+  M=768    K=288  N=1    PASS  max|err|=8.40e-06
+  M=768    K=288  N=32   PASS  max|err|=1.22e-05
+  M=288    K=768  N=1    PASS  max|err|=3.50e-05
+  M=288    K=768  N=32   PASS  max|err|=4.09e-05
+  M=32000  K=288  N=1    PASS  max|err|=1.69e-05
+  M=32000  K=288  N=32   PASS  max|err|=1.86e-05
+  M=768    K=768  N=768  PASS  max|err|=5.55e-05
+=== ALL PASS ===
+INFO: [SIM 1] CSim done with 0 errors.
+INFO: [SIM 3] *************** CSIM finish ***************

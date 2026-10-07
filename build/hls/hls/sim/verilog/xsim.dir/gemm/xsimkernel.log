@@ -1,0 +1,7 @@
+Running: xsim.dir/gemm/xsimk -simmode gui -testplusarg UVM_VERBOSITY=UVM_NONE -testplusarg UVM_TESTNAME=gemm_test_lib -testplusarg UVM_TIMEOUT=20000000000000 -wdb gemm.wdb -simrunnum 0 -socket 50419
+Design successfully loaded
+Design Loading Memory Usage: 428680 KB (Peak: 428680 KB)
+Design Loading CPU Usage: 1470 ms
+Simulation completed
+Simulation Memory Usage: 6387668 KB (Peak: 6445008 KB)
+Simulation CPU Usage: 94580 ms

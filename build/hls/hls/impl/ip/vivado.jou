@@ -1,0 +1,24 @@
+#-----------------------------------------------------------
+# Vivado v2025.1 (64-bit)
+# SW Build 6140274 on Wed May 21 22:58:25 MDT 2025
+# IP Build 6138677 on Thu May 22 03:10:11 MDT 2025
+# SharedData Build 6139179 on Tue May 20 17:58:58 MDT 2025
+# Start of session at: Thu Oct  1 02:36:24 2026
+# Process ID         : 2079057
+# Current directory  : /home/cs2401.03/mini1-gemm/build/hls/hls/impl/ip
+# Command line       : vivado -notrace -mode batch -source run_ippack.tcl
+# Log file           : /home/cs2401.03/mini1-gemm/build/hls/hls/impl/ip/vivado.log
+# Journal file       : /home/cs2401.03/mini1-gemm/build/hls/hls/impl/ip/vivado.jou
+# Running On         : rce.iiit.ac.in
+# Platform           : CentOSStream
+# Operating System   : CentOS Stream release 8
+# Processor Detail   : Intel(R) Xeon(R) Gold 6226R CPU @ 2.90GHz
+# CPU Frequency      : 2900.000 MHz
+# CPU Physical cores : 32
+# CPU Logical cores  : 64
+# Host memory        : 100335 MB
+# Swap memory        : 17179 MB
+# Total Virtual      : 117515 MB
+# Available Virtual  : 96246 MB
+#-----------------------------------------------------------
+source run_ippack.tcl -notrace

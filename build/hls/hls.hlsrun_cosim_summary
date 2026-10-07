@@ -1,0 +1,226 @@
+<ENTRY>
+{
+ "thisFile": "/home/cs2401.03/mini1-gemm/build/hls/hls.hlsrun_cosim_summary",
+ "connectId": "",
+ "serverToken": "",
+ "timestamp": "0"
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_CmdStep",
+ "dateTimestamp": "Wed Oct  7 01:50:01 2026",
+ "timestampMillis": "1791318001837",
+ "buildStep": {
+  "cmdId": "a9dfd42b-3cd6-4ff6-86a6-c7d2ff011560",
+  "name": "vitis-run",
+  "logFile": "/home/cs2401.03/mini1-gemm/build/hls/logs/hls.steps.log",
+  "commandLine": "/home/Xilinx/2025.1/Vitis/bin/unwrapped/lnx64.o/vitis-run  --mode hls --cosim --config hls_config.cfg --work_dir build/hls ",
+  "args": [
+   "--mode",
+   "hls",
+   "--cosim",
+   "--config",
+   "hls_config.cfg",
+   "--work_dir",
+   "build/hls"
+  ],
+  "iniFiles": [],
+  "cwd": "/home/cs2401.03/mini1-gemm"
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_Status",
+ "dateTimestamp": "Wed Oct  7 01:50:01 2026",
+ "timestampMillis": "1791318001838",
+ "status": {
+  "cmdId": "a9dfd42b-3cd6-4ff6-86a6-c7d2ff011560",
+  "state": "CS_RUNNING"
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_FlowMetaData",
+ "dateTimestamp": "Wed Oct  7 01:50:06 2026",
+ "timestampMillis": "1791318006574",
+ "buildSummary": {
+  "hardwarePlatform": "",
+  "hardwareDsa": "",
+  "platformDirectory": "",
+  "runtime": "",
+  "systemConfig": "",
+  "flow": "BF_RUN",
+  "target": "TT_HLS_RTL_COSIM",
+  "kernels": [
+   {
+    "base": {
+     "type": "KERNEL",
+     "name": "gemm",
+     "file": "",
+     "reports": [],
+     "uuid": ""
+    },
+    "sources": [
+     "/home/cs2401.03/mini1-gemm/src/kernel.cpp"
+    ],
+    "psSources": [],
+    "cuNames": [],
+    "type": "HLS",
+    "frequency": 0,
+    "freqUnits": ""
+   }
+  ],
+  "toolVersion": "2025.1"
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_SubCmdStep",
+ "dateTimestamp": "Wed Oct  7 01:50:06 2026",
+ "timestampMillis": "1791318006574",
+ "buildStep": {
+  "cmdId": "7bbb327b-7be9-4c95-bbf1-001b0c865b2e",
+  "name": "",
+  "logFile": "/home/cs2401.03/mini1-gemm/build/hls/hls/hls.log",
+  "commandLine": "",
+  "args": [],
+  "iniFiles": [],
+  "cwd": "/home/cs2401.03/mini1-gemm/build"
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_Status",
+ "dateTimestamp": "Wed Oct  7 01:50:06 2026",
+ "timestampMillis": "1791318006575",
+ "status": {
+  "cmdId": "7bbb327b-7be9-4c95-bbf1-001b0c865b2e",
+  "state": "CS_RUNNING"
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_Report",
+ "dateTimestamp": "Wed Oct  7 01:50:06 2026",
+ "timestampMillis": "1791318006575",
+ "report": {
+  "path": "/home/cs2401.03/mini1-gemm/build/hls/hls/sim/report/gemm_cosim.rpt",
+  "name": "",
+  "fileType": "TEXT",
+  "reportType": "HLS_COSIMULATION",
+  "cmdId": ""
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_Report",
+ "dateTimestamp": "Wed Oct  7 01:50:06 2026",
+ "timestampMillis": "1791318006582",
+ "report": {
+  "path": "/home/cs2401.03/mini1-gemm/build/hls/hls",
+  "name": "",
+  "fileType": "DIR",
+  "reportType": "HLS_DATAFLOW",
+  "cmdId": ""
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_Report",
+ "dateTimestamp": "Wed Oct  7 01:50:06 2026",
+ "timestampMillis": "1791318006582",
+ "report": {
+  "path": "/home/cs2401.03/mini1-gemm/build/hls/hls",
+  "name": "",
+  "fileType": "DIR",
+  "reportType": "HLS_FUNCTION_CALL_GRAPH_COSIM",
+  "cmdId": ""
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_Report",
+ "dateTimestamp": "Wed Oct  7 01:50:06 2026",
+ "timestampMillis": "1791318006582",
+ "report": {
+  "path": "/home/cs2401.03/mini1-gemm/build/hls/hls",
+  "name": "",
+  "fileType": "DIR",
+  "reportType": "HLS_TIMELINE_TRACE",
+  "cmdId": ""
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_Report",
+ "dateTimestamp": "Wed Oct  7 01:50:06 2026",
+ "timestampMillis": "1791318006582",
+ "report": {
+  "path": "/home/cs2401.03/mini1-gemm/build/hls/hls",
+  "name": "",
+  "fileType": "DIR",
+  "reportType": "HLS_WAVE",
+  "cmdId": ""
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_Status",
+ "dateTimestamp": "Wed Oct  7 01:52:58 2026",
+ "timestampMillis": "1791318178883",
+ "status": {
+  "cmdId": "7bbb327b-7be9-4c95-bbf1-001b0c865b2e",
+  "state": "CS_PASSED"
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_Status",
+ "dateTimestamp": "Wed Oct  7 01:52:59 2026",
+ "timestampMillis": "1791318179022",
+ "status": {
+  "cmdId": "a9dfd42b-3cd6-4ff6-86a6-c7d2ff011560",
+  "state": "CS_PASSED"
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_Report",
+ "dateTimestamp": "Wed Oct  7 01:52:59 2026",
+ "timestampMillis": "1791318179022",
+ "report": {
+  "path": "",
+  "name": "",
+  "fileType": "HTML",
+  "reportType": "GLOBAL_RULECHECK_GUIDANCE",
+  "cmdId": ""
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_Report",
+ "dateTimestamp": "Wed Oct  7 01:52:59 2026",
+ "timestampMillis": "1791318179022",
+ "report": {
+  "path": "",
+  "name": "",
+  "fileType": "BINARY_PROTOBUF",
+  "reportType": "GLOBAL_RULECHECK_GUIDANCE",
+  "cmdId": ""
+ }
+}
+</ENTRY>

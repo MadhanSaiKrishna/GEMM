@@ -1,0 +1,15 @@
+/home/cs2401.03/mini1-gemm/build/hls/hls/.autopilot/db/kernel.pp.0.cpp:172:2: warning: Added loop label VITIS_LOOP_30_1:   [xilinx-label-all-loops]
+ for (int i = 0; i < M; i++)
+ ^~~
+ VITIS_LOOP_30_1: 
+/home/cs2401.03/mini1-gemm/build/hls/hls/.autopilot/db/kernel.pp.0.cpp:172:2: note: FIX-IT applied suggested code changes
+/home/cs2401.03/mini1-gemm/build/hls/hls/.autopilot/db/kernel.pp.0.cpp:173:9: warning: Added loop label VITIS_LOOP_31_2:   [xilinx-label-all-loops]
+        for (int j = 0; j < N; j++) {
+        ^~~
+        VITIS_LOOP_31_2: 
+/home/cs2401.03/mini1-gemm/build/hls/hls/.autopilot/db/kernel.pp.0.cpp:173:9: note: FIX-IT applied suggested code changes
+/home/cs2401.03/mini1-gemm/build/hls/hls/.autopilot/db/kernel.pp.0.cpp:175:13: warning: Added loop label VITIS_LOOP_33_3:   [xilinx-label-all-loops]
+            for (int k = 0; k < K; k++)
+            ^~~
+            VITIS_LOOP_33_3: 
+/home/cs2401.03/mini1-gemm/build/hls/hls/.autopilot/db/kernel.pp.0.cpp:175:13: note: FIX-IT applied suggested code changes

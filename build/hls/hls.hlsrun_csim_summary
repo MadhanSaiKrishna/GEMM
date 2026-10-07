@@ -1,0 +1,156 @@
+<ENTRY>
+{
+ "thisFile": "/home/cs2401.03/mini1-gemm/build/hls/hls.hlsrun_csim_summary",
+ "connectId": "",
+ "serverToken": "",
+ "timestamp": "0"
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_CmdStep",
+ "dateTimestamp": "Wed Oct  7 01:49:18 2026",
+ "timestampMillis": "1791317958670",
+ "buildStep": {
+  "cmdId": "3e3deb8e-8512-4c8e-8811-292877c77e02",
+  "name": "vitis-run",
+  "logFile": "/home/cs2401.03/mini1-gemm/build/hls/logs/hls.steps.log",
+  "commandLine": "/home/Xilinx/2025.1/Vitis/bin/unwrapped/lnx64.o/vitis-run  --mode hls --csim --config hls_config.cfg --work_dir build/hls ",
+  "args": [
+   "--mode",
+   "hls",
+   "--csim",
+   "--config",
+   "hls_config.cfg",
+   "--work_dir",
+   "build/hls"
+  ],
+  "iniFiles": [],
+  "cwd": "/home/cs2401.03/mini1-gemm"
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_Status",
+ "dateTimestamp": "Wed Oct  7 01:49:18 2026",
+ "timestampMillis": "1791317958671",
+ "status": {
+  "cmdId": "3e3deb8e-8512-4c8e-8811-292877c77e02",
+  "state": "CS_RUNNING"
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_FlowMetaData",
+ "dateTimestamp": "Wed Oct  7 01:49:24 2026",
+ "timestampMillis": "1791317964562",
+ "buildSummary": {
+  "hardwarePlatform": "",
+  "hardwareDsa": "",
+  "platformDirectory": "",
+  "runtime": "",
+  "systemConfig": "",
+  "flow": "BF_RUN",
+  "target": "TT_HLS_C_SIM",
+  "kernels": [
+   {
+    "base": {
+     "type": "KERNEL",
+     "name": "gemm",
+     "file": "",
+     "reports": [],
+     "uuid": ""
+    },
+    "sources": [
+     "/home/cs2401.03/mini1-gemm/src/kernel.cpp"
+    ],
+    "psSources": [],
+    "cuNames": [],
+    "type": "HLS",
+    "frequency": 0,
+    "freqUnits": ""
+   }
+  ],
+  "toolVersion": "2025.1"
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_SubCmdStep",
+ "dateTimestamp": "Wed Oct  7 01:49:24 2026",
+ "timestampMillis": "1791317964562",
+ "buildStep": {
+  "cmdId": "0824580b-231e-45b2-a2cb-52634b8ffc1b",
+  "name": "",
+  "logFile": "/home/cs2401.03/mini1-gemm/build/hls/hls/hls.log",
+  "commandLine": "",
+  "args": [],
+  "iniFiles": [],
+  "cwd": "/home/cs2401.03/mini1-gemm/build"
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_Status",
+ "dateTimestamp": "Wed Oct  7 01:49:24 2026",
+ "timestampMillis": "1791317964563",
+ "status": {
+  "cmdId": "0824580b-231e-45b2-a2cb-52634b8ffc1b",
+  "state": "CS_RUNNING"
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_Status",
+ "dateTimestamp": "Wed Oct  7 01:49:30 2026",
+ "timestampMillis": "1791317970859",
+ "status": {
+  "cmdId": "0824580b-231e-45b2-a2cb-52634b8ffc1b",
+  "state": "CS_PASSED"
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_Status",
+ "dateTimestamp": "Wed Oct  7 01:49:30 2026",
+ "timestampMillis": "1791317970969",
+ "status": {
+  "cmdId": "3e3deb8e-8512-4c8e-8811-292877c77e02",
+  "state": "CS_PASSED"
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_Report",
+ "dateTimestamp": "Wed Oct  7 01:49:30 2026",
+ "timestampMillis": "1791317970969",
+ "report": {
+  "path": "",
+  "name": "",
+  "fileType": "HTML",
+  "reportType": "GLOBAL_RULECHECK_GUIDANCE",
+  "cmdId": ""
+ }
+}
+</ENTRY>
+<ENTRY>
+{
+ "type": "ET_Report",
+ "dateTimestamp": "Wed Oct  7 01:49:30 2026",
+ "timestampMillis": "1791317970970",
+ "report": {
+  "path": "",
+  "name": "",
+  "fileType": "BINARY_PROTOBUF",
+  "reportType": "GLOBAL_RULECHECK_GUIDANCE",
+  "cmdId": ""
+ }
+}
+</ENTRY>
