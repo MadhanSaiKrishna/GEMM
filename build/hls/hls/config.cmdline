@@ -1,3 +1,0 @@
-relativeroot=/home/cs2401.03/mini1-gemm
-original_argv=--mode hls --cosim --config hls_config.cfg --work_dir build/hls 
-

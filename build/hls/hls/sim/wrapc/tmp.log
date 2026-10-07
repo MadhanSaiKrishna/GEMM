@@ -1,5 +1,0 @@
-=== kernel_tb (tiny shapes, cosim-sized buffers) ===
-  M=16     K=288  N=1    PASS  max|err|=2.72e-06
-  M=8      K=768  N=1    PASS  max|err|=7.20e-06
-  M=4      K=288  N=40   PASS  max|err|=9.99e-06
-=== ALL PASS ===

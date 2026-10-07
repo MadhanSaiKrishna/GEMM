@@ -1,1 +1,0 @@
-set ::AESL_AUTOSIM::gTopFileName /home/cs2401.03/mini1-gemm/build/hls/hls/./sim/autowrap/testbench/kernel.cpp_pre.cpp.tb.cpp
