@@ -1,0 +1,2 @@
+ADVISORY: [AUTO-FREQ-SCALING-08] For clock hbm_aclk, the auto scaled frequency 487.8 MHz exceeds the original specified frequency. The compiler will select the original specified frequency of 450.0 MHz.
+ADVISORY: [AUTO-FREQ-SCALING-08] For clock clk_kernel_00_unbuffered_net, the auto scaled frequency 309.9 MHz exceeds the original specified frequency. The compiler will select the original specified frequency of 300.0 MHz.
