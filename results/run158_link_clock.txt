@@ -1,0 +1,7 @@
+run158 (hw-104662.log): kernel clock achieved 300 MHz (xclbinutil); only AUTO-FREQ-SCALING-08 advisories (auto-scaled 300.1 / 452.0 MHz exceeded the request, so 300.0 / 450.0 MHz kept); no -04 or -07
+255:ADVISORY: [AUTO-FREQ-SCALING-08] For clock clk_kernel_00_unbuffered_net, the auto scaled frequency 300.1 MHz exceeds the original specified frequency. The compiler will select the original specified frequency of 300.0 MHz.
+256:ADVISORY: [AUTO-FREQ-SCALING-08] For clock hbm_aclk, the auto scaled frequency 452.0 MHz exceeds the original specified frequency. The compiler will select the original specified frequency of 450.0 MHz.
+   Requested Freq: 300 MHz
+   Achieved Freq:  300 MHz
+   Requested Freq: 500 MHz
+   Achieved Freq:  500 MHz
