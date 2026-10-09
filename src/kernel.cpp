@@ -28,7 +28,7 @@
 #endif
 
 #ifndef GEMM_RS
-#define GEMM_RS 16
+#define GEMM_RS 24
 #endif
 #ifndef GEMM_NT
 #define GEMM_NT 256    /* B-tile width in columns; NT/16 must be >= 8 (accumulator revisit distance) */
@@ -338,4 +338,3 @@ colt:
         }
     }
 }
-
