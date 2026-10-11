@@ -1,0 +1,8 @@
+run202 (hw-105550.log): kernel clock lines from the link log
+202:WARNING: [AUTO-FREQ-SCALING-04] One or more timing paths failed timing requirements. The kernel clock ulp_ucs/aclk_kernel_00 has an original frequency equal to 300.000000 MHz. The frequency has been automatically changed to 252.5 MHz to enable proper functionality. The clock Id is 0.
+203:WARNING: [AUTO-FREQ-SCALING-07] One or more timing paths failed timing requirements. The system clock hbm_aclk has an original frequency equal to 450 MHz. The frequency has been automatically changed to 444.2 MHz to enable proper functionality.
+-- xclbinutil:
+   Requested Freq: 300 MHz
+   Achieved Freq:  252.5 MHz
+   Requested Freq: 500 MHz
+   Achieved Freq:  500 MHz

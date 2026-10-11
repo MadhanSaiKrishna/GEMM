@@ -1,114 +1,67 @@
-/* kernel.cpp -- tiled GEMM (M3: first composed version, no load/compute overlap yet).
- *
- *   C[M x N] = A[M x K] * B[K x N], row-major float32.
- *   CONTRACT (unchanged): extern "C" void gemm(A, B, C, M, K, N); ports gmem0/1/2.
- *   Assumes K % 16 == 0 (the graded K are 288 and 768), K <= 768 and M <= 32000. N is arbitrary.
- *
- * THE IDEA, in one tile
- *   B tile  : K x NT floats kept on-chip (URAM), loaded once per NT-wide column tile.
- *   A tile  : RS rows x K floats in 16 BRAM banks, loaded with one 512-bit burst per tile.
- *   engine  : every cycle reads one wide B word (16 floats) and one k from each of RS rows
- *             and does RS x 16 multiply-adds into RS x 16 independent accumulators.
- *   C tile  : RS rows x NT floats written back row by row in bursts.
- * Why it is fast
- *   - 16 columns x RS rows of MACs per cycle (RS=8: 128 lanes, about 640 DSPs).
- *   - Each accumulator is revisited only every NT/16 cycles (16 for NT=256), longer than the
- *     8-cycle float add, so the add recurrence is hidden and the loop runs at II=1.
- *   - A tile is banked (k + row) mod 16: a 16-wide write beat and a one-k-from-every-row read
- *     both touch 16 different banks, so neither stalls the other.
- *   - Addresses are built as group*16 + lane so HLS can prove alignment and widen to 512 bits;
- *     B and C row loops are flattened with their beat loops so row requests overlap.
- * N = 1 (the 43 matrix-vector calls per token) takes a separate path, gemv() below: it is limited by memory,
- * not arithmetic, so it streams A once through 16 lanes along k instead of padding one column to 256.
- * Tails: M not a multiple of RS (A rows zero-filled, only valid rows stored), N not a multiple
- * of NT (only valid columns move) and N not a multiple of 16 (element-exact paths).
- * Tune RS and NT with the two #define lines below (keep each #define on ONE line).
- */
-#include <cstdint>
+/* kernel.cpp -- tiled float32 GEMM, C[MxN] = A[MxK] * B[KxN], row-major. Contract: gemm(A, B, C, M, K, N), K % 16 == 0, K <= 768, M <= 32000.
+ *   N = 1      : own streaming path (gemv), load / multiply-add overlapped with DATAFLOW.
+ *   N = 17..32 : row-group interleave (core_engine_narrow), no padded column groups.
+ *   other N    : padded tiled engine (RS rows x 16 lanes per cycle, accumulators revisited every 16 cycles).
+ * Knobs (one #define each): GEMM_RS = rows per tile, GEMM_G2 = row groups in the N = 17..32 mode. */
 #ifndef __SYNTHESIS__
 #include <cassert>
 #endif
+#include "hls_stream.h"
+#include "hls_streamofblocks.h"
 
 #ifndef GEMM_RS
 #define GEMM_RS 16
 #endif
-#ifndef GEMM_NT
-#define GEMM_NT 256    /* B-tile width in columns; NT/16 must be >= 8 (accumulator revisit distance) */
-#endif
 
-#define GEMM_STR_(x) #x
-#define GEMM_STR(x) GEMM_STR_(x)
-#pragma message("GEMM config: RS=" GEMM_STR(GEMM_RS) " NT=" GEMM_STR(GEMM_NT))
+#ifndef GEMM_G2
+#define GEMM_G2 6
+#endif
 
 namespace cfg {
-constexpr int RS = GEMM_RS;                 /* rows per tile                                    */
-constexpr int W = 16;                       /* floats per 512-bit beat = columns per lane group  */
-constexpr int NT = GEMM_NT;                 /* B-tile width                                     */
-constexpr int NG = NT / W;                  /* column groups = accumulator revisit distance     */
+constexpr int RS = GEMM_RS;
+constexpr int W = 16;
+constexpr int NT = 256;
+constexpr int NG = NT / W;
 constexpr int KMAX = 768;
-constexpr int KW = KMAX / W;                /* 48 words per A row: a fixed stride, no multiplier */
-constexpr int MMAX = 32000;                 /* largest M: the N=1 path keeps all of y on-chip       */
-constexpr int R1 = 16;                      /* rows per tile on the N=1 path                        */
+constexpr int KW = KMAX / W;
+constexpr int MMAX = 32000;
+constexpr int R1 = 16;
+constexpr int G2 = GEMM_G2;
+constexpr int NR = RS * G2;
 constexpr int ceil_pow2(int x, int p = 1) { return p >= x ? p : ceil_pow2(x, p * 2); }
-constexpr int P = ceil_pow2(RS > W ? RS : W);   /* A banks (also the skew modulus)             */
-}  // namespace cfg
-
-static_assert(cfg::NT % cfg::W == 0, "NT must be a multiple of 16");
-static_assert(cfg::NG >= 8, "NT/16 below the 8-cycle float-add latency would force II > 1");
-static_assert(cfg::RS <= cfg::P && cfg::P <= 32, "RS must be at most 32");
-
-/* ---------------------------------------------------------------- A tile: skewed banks */
-/* Element (row r, column k) lives in bank (k + r) mod P at address row_base(r) + k/16.
- *   write beat = row r, 16 consecutive k   -> 16 consecutive residues -> 16 different banks
- *   read       = one k, rows 0..RS-1       -> RS consecutive residues -> RS different banks */
-static_assert(cfg::KW == 48, "row_base is hard-wired to a 48-word row stride (32 + 16)");
-constexpr int row_base(int r) { return (r << 5) + (r << 4); }
-constexpr int a_bank(int r, int k) { return (k + r) & (cfg::P - 1); }
-
-#if __cplusplus >= 201402L
-constexpr int popcount(uint32_t m) { int c = 0; for (; m; m &= m - 1) c++; return c; }
-constexpr bool mapping_conflict_free() {
-    for (int r = 0; r < cfg::RS; r++)
-        for (int w = 0; w < cfg::KW; w++) {            /* every write beat hits 16 banks */
-            uint32_t m = 0;
-            for (int l = 0; l < cfg::W; l++) m |= 1u << a_bank(r, w * cfg::W + l);
-            if (popcount(m) != cfg::W) return false;
-        }
-    for (int k = 0; k < cfg::KMAX; k++) {              /* every one-k read hits RS banks */
-        uint32_t m = 0;
-        for (int r = 0; r < cfg::RS; r++) m |= 1u << a_bank(r, k);
-        if (popcount(m) != cfg::RS) return false;
-    }
-    return true;
+constexpr int P = ceil_pow2(RS > W ? RS : W);
 }
-static_assert(mapping_conflict_free(), "A-tile bank mapping has a bank conflict");
-#endif
 
-/* Every bank index below is a constant (the loop variable of a fully unrolled loop), so HLS sees
- * exactly one access per bank per cycle; the skew lives in the data permutation and the address. */
-typedef float ABanks[cfg::P][cfg::RS * cfg::KW];
+static_assert(cfg::RS <= cfg::P && cfg::P <= 32, "RS must be at most 32");
+static_assert(2 * cfg::G2 >= 10, "2*G2 slots per k must exceed the 8-cycle float add (use G2 >= 5)");
+static_assert(2 * cfg::G2 <= cfg::NG, "the narrow mode reuses the accumulator RAM depth NG");
 
-/* Scatter one 512-bit beat (row r, word w) into the banks: a rotation by r. */
-inline void a_write_beat(ABanks buf, int r, int w, const float beat[cfg::W]) {
+static_assert(cfg::KW == 48, "row_base is hard-wired to a 48-word row stride (32 + 16)");
+// A tile: element (row r, k) sits in bank (k + r) mod P at word row_base(r) + k/16 (+ g*RS*KW for row group g).
+// A beat write and a one-k-from-every-row read then each touch distinct banks.
+constexpr int row_base(int r) { return (r << 5) + (r << 4); }
+
+typedef float ABanks[cfg::P][cfg::G2 * cfg::RS * cfg::KW];
+
+inline void a_write_beat(ABanks buf, int goff, int r, int w, const float beat[cfg::W]) {
 #pragma HLS INLINE
-    const int addr = row_base(r) + w;
+    const int addr = goff + row_base(r) + w;
     for (int b = 0; b < cfg::P; b++) {
 #pragma HLS UNROLL
-        const int l = (b - r - w * cfg::W) & (cfg::P - 1);   /* beat lane that belongs in bank b */
+        const int l = (b - r - w * cfg::W) & (cfg::P - 1);
         if (l < cfg::W) buf[b][addr] = beat[l];
     }
 }
 
-/* Gather A[i][k] for i = 0..RS-1: read every bank once, then permute the results. */
-inline void a_read_k(const ABanks buf, int k, float a[cfg::RS]) {
+inline void a_read_k(const ABanks buf, int goff, int k, float a[cfg::RS]) {
 #pragma HLS INLINE
     float v[cfg::P];
 #pragma HLS ARRAY_PARTITION variable = v complete
     const int w = k >> 4;
     for (int b = 0; b < cfg::P; b++) {
 #pragma HLS UNROLL
-        const int i = (b - k) & (cfg::P - 1);                /* the row this bank serves at k */
-        v[b] = (i < cfg::RS) ? buf[b][row_base(i) + w] : 0.0f;
+        const int i = (b - k) & (cfg::P - 1);
+        v[b] = (i < cfg::RS) ? buf[b][goff + row_base(i) + w] : 0.0f;
     }
     for (int i = 0; i < cfg::RS; i++) {
 #pragma HLS UNROLL
@@ -116,12 +69,10 @@ inline void a_read_k(const ABanks buf, int k, float a[cfg::RS]) {
     }
 }
 
-/* -------------------------------------------------------------------------- the engine */
-typedef float BTile[cfg::KMAX][cfg::NT];       /* B tile: K rows of NT floats                   */
-typedef float Acc[cfg::RS][cfg::NG][cfg::W];   /* [row][column group][lane]: one RAM per lane   */
+typedef float BTile[cfg::KMAX][cfg::NT];
+typedef float Acc[cfg::RS][cfg::NG][cfg::W];
 
-/* One A tile against one B tile: acc[r][jg][u] = sum over k of A[r][k] * B[k][jg*16 + u].
- * The k and jg loops flatten into ONE pipelined loop at II=1: each cycle is one (k, jg) pair. */
+// Padded engine: one (k, column group) pair per cycle, RS x 16 MACs; an accumulator is revisited every NG = 16 cycles.
 inline void core_engine(const ABanks Abuf, const BTile Bt, Acc acc, int K) {
 #pragma HLS INLINE
 initacc:
@@ -137,7 +88,6 @@ initacc:
     }
 kdim:
     for (int k = 0; k < K; k++) {
-#pragma HLS LOOP_TRIPCOUNT min=288 max=768
     cols:
         for (int jg = 0; jg < cfg::NG; jg++) {
 #pragma HLS PIPELINE II=1
@@ -146,42 +96,39 @@ kdim:
             float b[cfg::W];
 #pragma HLS ARRAY_PARTITION variable=b complete
 
-            a_read_k(Abuf, k, a);                          /* one access per bank */
+            a_read_k(Abuf, 0, k, a);
             for (int u = 0; u < cfg::W; u++) {
 #pragma HLS UNROLL
-                b[u] = Bt[k][jg * cfg::W + u];             /* one wide word       */
+                b[u] = Bt[k][jg * cfg::W + u];
             }
             for (int r = 0; r < cfg::RS; r++) {
 #pragma HLS UNROLL
                 for (int u = 0; u < cfg::W; u++) {
 #pragma HLS UNROLL
-                    acc[r][jg][u] += a[r] * b[u];          /* RS x 16 MACs        */
+                    acc[r][jg][u] += a[r] * b[u];
                 }
             }
         }
     }
 }
 
-/* ------------------------------------------------------------------------ the transfers */
-/* A tile: rows row0 .. row0+rows_valid-1 are contiguous in HBM, so the whole tile is one run of
- * rows_valid*K/16 beats (one long burst). Rows past rows_valid are zero-filled. */
+// A tile: rows are contiguous in HBM -> one burst; rows past rows_valid are zero-filled.
 inline void load_A_tile(const float *A, ABanks buf, int row0, int rows_valid, int K) {
 #pragma HLS INLINE
     const int K16 = K >> 4;
-    const int G0 = row0 * K16;          /* group index of the first beat */
-    const int nb = rows_valid * K16;    /* beats to load                 */
+    const int G0 = row0 * K16;
+    const int nb = rows_valid * K16;
     int r = 0, w = 0;
 loadA:
     for (int q = 0; q < nb; q++) {
 #pragma HLS PIPELINE II=1
-#pragma HLS LOOP_TRIPCOUNT min=18 max=1536
         float beat[cfg::W];
 #pragma HLS ARRAY_PARTITION variable=beat complete
         for (int l = 0; l < cfg::W; l++) {
 #pragma HLS UNROLL
-            beat[l] = A[(G0 + q) * cfg::W + l];            /* group*16 + lane: provably aligned */
+            beat[l] = A[(G0 + q) * cfg::W + l];
         }
-        a_write_beat(buf, r, w, beat);
+        a_write_beat(buf, 0, r, w, beat);
         if (w == K16 - 1) { w = 0; r++; } else { w++; }
     }
 zeroA:
@@ -194,27 +141,24 @@ zeroA:
 #pragma HLS UNROLL
                 z[l] = 0.0f;
             }
-            a_write_beat(buf, rr, ww, z);
+            a_write_beat(buf, 0, rr, ww, z);
         }
     }
 }
 
-/* B tile: columns jt .. jt+nvalid-1 of every row k < K. Each row segment is contiguous, rows are N
- * apart. Only the nvalid columns are read (cosim memory is exactly K*N floats). */
+// B tile: columns jt..jt+nvalid-1 of every row (fast path when N % 16 == 0, element-exact tail otherwise).
 inline void load_B_tile(const float *B, BTile Bt, int jt, int nvalid, int K, int N) {
 #pragma HLS INLINE
     if ((N & (cfg::W - 1)) == 0) {
-        /* fast path: N is a multiple of 16, so every row segment is a run of whole beats */
-        const int NU = N >> 4;                  /* beats per row of B                      */
-        const int nvg = nvalid >> 4;            /* beats to load per row                   */
-        int rowg = jt >> 4;                     /* group index of (row k, column jt); += NU per row */
+
+        const int NU = N >> 4;
+        const int nvg = nvalid >> 4;
+        int rowg = jt >> 4;
     loadB_row:
         for (int k = 0; k < K; k++) {
-#pragma HLS LOOP_TRIPCOUNT min=288 max=768
         loadB_grp:
             for (int jg = 0; jg < nvg; jg++) {
 #pragma HLS PIPELINE II=1
-#pragma HLS LOOP_TRIPCOUNT min=1 max=96
                 float wd[cfg::W];
 #pragma HLS ARRAY_PARTITION variable=wd complete
                 for (int u = 0; u < cfg::W; u++) {
@@ -229,9 +173,9 @@ inline void load_B_tile(const float *B, BTile Bt, int jt, int nvalid, int K, int
             rowg += NU;
         }
     } else {
-        /* tail path (N = 1, 40, ...): element-exact, one 16-float word per iteration, padded with zeros */
+
         const int ngc = (nvalid + cfg::W - 1) >> 4;
-        int base = jt;                          /* element index of (row k, column jt) */
+        int base = jt;
     loadB_row_tail:
         for (int k = 0; k < K; k++) {
 #pragma HLS LOOP_FLATTEN off
@@ -255,26 +199,23 @@ inline void load_B_tile(const float *B, BTile Bt, int jt, int nvalid, int K, int
     }
 }
 
-/* C tile: tile row r lives in src[r][jg][u]. Each row segment is contiguous, rows are N apart.
- * Writes exactly rows_valid x nvalid floats and nothing else. */
-inline void store_C_tile(float *C, const Acc src, int row0, int rows_valid, int jt, int nvalid, int N) {
+// C tile: row r is in src[r][tbase + jg][u]; writes exactly rows_valid x nvalid floats.
+inline void store_C_tile(float *C, const Acc src, int row0, int rows_valid, int jt, int nvalid, int N, int tbase) {
 #pragma HLS INLINE
     if ((N & (cfg::W - 1)) == 0) {
         const int NU = N >> 4;
         const int nvg = nvalid >> 4;
-        int rowg = row0 * NU + (jt >> 4);       /* group index of (row row0, column jt) */
+        int rowg = row0 * NU + (jt >> 4);
     storeC_row:
         for (int r = 0; r < rows_valid; r++) {
-#pragma HLS LOOP_TRIPCOUNT min=1 max=32
         storeC_grp:
             for (int jg = 0; jg < nvg; jg++) {
 #pragma HLS PIPELINE II=1
-#pragma HLS LOOP_TRIPCOUNT min=1 max=96
                 float v[cfg::W];
 #pragma HLS ARRAY_PARTITION variable=v complete
                 for (int u = 0; u < cfg::W; u++) {
 #pragma HLS UNROLL
-                    v[u] = src[r][jg][u];
+                    v[u] = src[r][tbase + jg][u];
                 }
                 for (int u = 0; u < cfg::W; u++) {
 #pragma HLS UNROLL
@@ -284,26 +225,110 @@ inline void store_C_tile(float *C, const Acc src, int row0, int rows_valid, int 
             rowg += NU;
         }
     } else {
-        int base = row0 * N + jt;               /* element index of (row row0, column jt) */
+        int base = row0 * N + jt;
     storeC_row_tail:
         for (int r = 0; r < rows_valid; r++) {
 #pragma HLS LOOP_FLATTEN off
         storeC_c_tail:
             for (int c = 0; c < nvalid; c++) {
 #pragma HLS PIPELINE II=1
-                C[base + c] = src[r][c >> 4][c & (cfg::W - 1)];
+                C[base + c] = src[r][tbase + (c >> 4)][c & (cfg::W - 1)];
             }
             base += N;
         }
     }
 }
 
-/* ----------------------------------------------------------------------- the N = 1 path */
-/* y = A x. Every element of A is used once, so the limit is how fast A streams in, not the arithmetic.
- * A tile of R1 = 16 rows is burst-loaded; then each cycle takes one 16-float beat of ONE row, multiplies it
- * by 16 floats of x and adds the 16 products with a tree. The 16 rows are interleaved (beat b of rows 0..15,
- * then beat b+1), so a row's accumulator is revisited every 16 cycles, longer than the 8-cycle float add:
- * the loop runs at II=1. Results stay in an on-chip buffer and go to C in one burst at the end. */
+// N = 17..32: only 2 column groups carry data. Interleave G2 row groups so slot t = 2*g + jg gives each accumulator
+// a revisit distance of 2*G2 (12) > the 8-cycle float add. Each output still sums k in order (bit-identical to the padded path).
+inline void core_engine_narrow(const ABanks Abuf, const BTile Bt, Acc acc, int K) {
+#pragma HLS INLINE
+initn:
+    for (int t = 0; t < 2 * cfg::G2; t++) {
+#pragma HLS PIPELINE II=1
+        for (int r = 0; r < cfg::RS; r++) {
+#pragma HLS UNROLL
+            for (int u = 0; u < cfg::W; u++) {
+#pragma HLS UNROLL
+                acc[r][t][u] = 0.0f;
+            }
+        }
+    }
+kdimn:
+    for (int k = 0; k < K; k++) {
+    slots:
+        for (int t = 0; t < 2 * cfg::G2; t++) {
+#pragma HLS PIPELINE II=1
+            const int g = t >> 1;
+            const int jg = t & 1;
+            float a[cfg::RS];
+#pragma HLS ARRAY_PARTITION variable=a complete
+            float b[cfg::W];
+#pragma HLS ARRAY_PARTITION variable=b complete
+
+            a_read_k(Abuf, g * (cfg::RS * cfg::KW), k, a);
+            for (int u = 0; u < cfg::W; u++) {
+#pragma HLS UNROLL
+                b[u] = Bt[k][jg * cfg::W + u];
+            }
+            for (int r = 0; r < cfg::RS; r++) {
+#pragma HLS UNROLL
+                for (int u = 0; u < cfg::W; u++) {
+#pragma HLS UNROLL
+                    acc[r][t][u] += a[r] * b[u];
+                }
+            }
+        }
+    }
+}
+
+// A tile of NR = G2*RS rows (G2 groups): one burst, beat q -> (group, row, word) in reading order; empty rows zero-filled.
+inline void load_A_tile_n(const float *A, ABanks buf, int row0, int rows_valid, int K) {
+#pragma HLS INLINE
+    const int K16 = K >> 4;
+    const int G0 = row0 * K16;
+    const int nb = rows_valid * K16;
+    int g = 0, r = 0, w = 0, goff = 0;
+loadAn:
+    for (int q = 0; q < nb; q++) {
+#pragma HLS PIPELINE II=1
+        float beat[cfg::W];
+#pragma HLS ARRAY_PARTITION variable=beat complete
+        for (int l = 0; l < cfg::W; l++) {
+#pragma HLS UNROLL
+            beat[l] = A[(G0 + q) * cfg::W + l];
+        }
+        a_write_beat(buf, goff, r, w, beat);
+        if (w == K16 - 1) {
+            w = 0;
+            if (r == cfg::RS - 1) { r = 0; g++; goff += cfg::RS * cfg::KW; } else { r++; }
+        } else {
+            w++;
+        }
+    }
+zeroAn:
+    for (int idx = rows_valid; idx < cfg::NR; idx++) {
+        const int gz = idx / cfg::RS;
+        const int rz = idx - gz * cfg::RS;
+        for (int ww = 0; ww < K16; ww++) {
+#pragma HLS PIPELINE II=1
+            float z[cfg::W];
+#pragma HLS ARRAY_PARTITION variable=z complete
+            for (int l = 0; l < cfg::W; l++) {
+#pragma HLS UNROLL
+                z[l] = 0.0f;
+            }
+            a_write_beat(buf, gz * (cfg::RS * cfg::KW), rz, ww, z);
+        }
+    }
+}
+
+// N = 1: three DATAFLOW stages overlap load and multiply-add.
+//   readA1 (one flat burst over all of A) -> FIFO -> fillA1 (two-slot tile buffer) -> dot1 (16 lanes along k, rows interleaved).
+struct Beat { float v[cfg::W]; };
+typedef Beat ATile[cfg::KW * cfg::R1];
+typedef hls::stream_of_blocks<ATile, 2> TileChan;
+
 inline float sum16(const float p[cfg::W]) {
 #pragma HLS INLINE
     float t[8];
@@ -321,68 +346,66 @@ inline float sum16(const float p[cfg::W]) {
     return t[0] + t[1];
 }
 
-inline void gemv(const float *A, const float *B, float *C, int M, int K) {
-#pragma HLS INLINE
-    const int K16 = K >> 4;
-
-    float x[cfg::KW][cfg::W];                      /* x = B (K contiguous floats), as 16-float words */
-#pragma HLS ARRAY_RESHAPE variable = x complete dim = 2
-    float at[cfg::KW * cfg::R1][cfg::W];           /* A tile, beat-major: word b*16 + r = beat b of row r */
-#pragma HLS ARRAY_RESHAPE variable = at complete dim = 2
-#pragma HLS BIND_STORAGE variable = at type = ram_2p impl = bram
-    float yb[cfg::MMAX / cfg::W][cfg::W];          /* all results; written to C in one burst at the end */
-#pragma HLS ARRAY_RESHAPE variable = yb complete dim = 2
-#pragma HLS BIND_STORAGE variable = yb type = ram_2p impl = uram
-    float acc[cfg::R1];                            /* one accumulator per row of the tile */
-#pragma HLS ARRAY_PARTITION variable = acc complete
-
-loadX:
-    for (int w = 0; w < K16; w++) {
+static void readA1(const float *A, hls::stream<Beat> &beats, int nbeats) {
+loadA1:
+    for (int g = 0; g < nbeats; g++) {
 #pragma HLS PIPELINE II=1
-#pragma HLS LOOP_TRIPCOUNT min=18 max=48
+        Beat bt;
         for (int l = 0; l < cfg::W; l++) {
 #pragma HLS UNROLL
-            x[w][l] = B[w * cfg::W + l];
+            bt.v[l] = A[g * cfg::W + l];
         }
+        beats.write(bt);
     }
+}
 
-rows1:
-    for (int row0 = 0; row0 < M; row0 += cfg::R1) {
-#pragma HLS LOOP_TRIPCOUNT min=1 max=2000
-        const int rows_valid = (M - row0 < cfg::R1) ? (M - row0) : cfg::R1;
-        const int G0 = row0 * K16;                 /* group index of the first beat of the tile */
+static void fillA1(hls::stream<Beat> &beats, TileChan &tiles, int M, int K16) {
+    const int ntiles = (M + cfg::R1 - 1) / cfg::R1;
+tiles1:
+    for (int t = 0; t < ntiles; t++) {
+        const int rows_valid = (M - t * cfg::R1 < cfg::R1) ? (M - t * cfg::R1) : cfg::R1;
+        const int nvalid = rows_valid * K16;
+        hls::write_lock<ATile> blk(tiles);
         int r = 0, b = 0;
-    loadA1:                                        /* rows are contiguous in HBM: one long burst */
-        for (int q = 0; q < rows_valid * K16; q++) {
+    fill1:
+        for (int j = 0; j < cfg::R1 * K16; j++) {
 #pragma HLS PIPELINE II=1
-#pragma HLS LOOP_TRIPCOUNT min=18 max=768
-            for (int l = 0; l < cfg::W; l++) {
-#pragma HLS UNROLL
-                at[(b << 4) + r][l] = A[(G0 + q) * cfg::W + l];
-            }
-            if (b == K16 - 1) { b = 0; r++; } else { b++; }
-        }
-    zero1:                                         /* rows past the end of A (M not a multiple of 16) */
-        for (int rr = rows_valid; rr < cfg::R1; rr++) {
-            for (int bb = 0; bb < K16; bb++) {
-#pragma HLS PIPELINE II=1
+            Beat bt;
+            if (j < nvalid) {
+                bt = beats.read();
+            } else {
                 for (int l = 0; l < cfg::W; l++) {
 #pragma HLS UNROLL
-                    at[(bb << 4) + rr][l] = 0.0f;
+                    bt.v[l] = 0.0f;
                 }
             }
+            blk[(b << 4) + r] = bt;
+            if (b == K16 - 1) { b = 0; r++; } else { b++; }
         }
-    dot1:
+    }
+}
+
+static void dot1(TileChan &tiles, const float x[cfg::KW][cfg::W], float yb[cfg::MMAX / cfg::W][cfg::W],
+                 int M, int K16) {
+#pragma HLS ARRAY_RESHAPE variable = x complete dim = 2
+#pragma HLS ARRAY_RESHAPE variable = yb complete dim = 2
+    const int ntiles = (M + cfg::R1 - 1) / cfg::R1;
+    float acc[cfg::R1];
+#pragma HLS ARRAY_PARTITION variable = acc complete
+rows1:
+    for (int t = 0; t < ntiles; t++) {
+        hls::read_lock<ATile> blk(tiles);
+    dotb:
         for (int bb = 0; bb < K16; bb++) {
-#pragma HLS LOOP_TRIPCOUNT min=18 max=48
         rows16:
             for (int rr = 0; rr < cfg::R1; rr++) {
 #pragma HLS PIPELINE II=1
+                const Beat a = blk[(bb << 4) + rr];
                 float p[cfg::W];
 #pragma HLS ARRAY_PARTITION variable = p complete
                 for (int l = 0; l < cfg::W; l++) {
 #pragma HLS UNROLL
-                    p[l] = at[(bb << 4) + rr][l] * x[bb][l];
+                    p[l] = a.v[l] * x[bb][l];
                 }
                 const float s = sum16(p);
                 acc[rr] = (bb == 0) ? s : acc[rr] + s;
@@ -390,15 +413,47 @@ rows1:
         }
         for (int l = 0; l < cfg::W; l++) {
 #pragma HLS UNROLL
-            yb[row0 >> 4][l] = acc[l];
+            yb[t][l] = acc[l];
+        }
+    }
+}
+
+static void gv_run(const float *A, const float x[cfg::KW][cfg::W], float yb[cfg::MMAX / cfg::W][cfg::W],
+                   int M, int K16) {
+#pragma HLS DATAFLOW
+    hls::stream<Beat> beats("beats");
+#pragma HLS STREAM variable = beats depth = 128
+    TileChan tiles;
+    readA1(A, beats, M * K16);                     // stage
+    fillA1(beats, tiles, M, K16);                  // stage
+    dot1(tiles, x, yb, M, K16);                    // stage
+}
+
+inline void gemv(const float *A, const float *B, float *C, int M, int K) {
+#pragma HLS INLINE
+    const int K16 = K >> 4;
+
+    float x[cfg::KW][cfg::W];
+#pragma HLS ARRAY_RESHAPE variable = x complete dim = 2
+    float yb[cfg::MMAX / cfg::W][cfg::W];
+#pragma HLS ARRAY_RESHAPE variable = yb complete dim = 2
+#pragma HLS BIND_STORAGE variable = yb type = ram_2p impl = uram
+
+loadX:
+    for (int w = 0; w < K16; w++) {
+#pragma HLS PIPELINE II=1
+        for (int l = 0; l < cfg::W; l++) {
+#pragma HLS UNROLL
+            x[w][l] = B[w * cfg::W + l];
         }
     }
 
-    const int ng = M >> 4;                         /* whole groups of 16 results, then the tail */
+    gv_run(A, x, yb, M, K16);
+
+    const int ng = M >> 4;
 storeY:
     for (int g = 0; g < ng; g++) {
 #pragma HLS PIPELINE II=1
-#pragma HLS LOOP_TRIPCOUNT min=1 max=2000
         for (int l = 0; l < cfg::W; l++) {
 #pragma HLS UNROLL
             C[g * cfg::W + l] = yb[g][l];
@@ -411,10 +466,9 @@ storeY_tail:
     }
 }
 
-/* ----------------------------------------------------------------------- the top function */
+// depth= only sizes cosim memory and must equal COSIM_{A,B,C}_ELEMS in kernel_tb.cpp.
 extern "C" void gemm(const float *A, const float *B, float *C, int M, int K, int N) {
-    // depth= only sizes cosim's memory models and must EQUAL COSIM_{A,B,C}_ELEMS in
-    // kernel_tb.cpp (cosim copies exactly `depth` elements per call). No effect on hw.
+
 #pragma HLS INTERFACE m_axi port=A offset=slave bundle=gmem0 depth=6144
 #pragma HLS INTERFACE m_axi port=B offset=slave bundle=gmem1 depth=11520
 #pragma HLS INTERFACE m_axi port=C offset=slave bundle=gmem2 depth=256
@@ -424,40 +478,58 @@ extern "C" void gemm(const float *A, const float *B, float *C, int M, int K, int
 #pragma HLS INTERFACE s_axilite port=return
 
 #ifndef __SYNTHESIS__
-    assert(K % 16 == 0 && K <= cfg::KMAX);   /* the contract this kernel relies on */
+    assert(K % 16 == 0 && K <= cfg::KMAX);
 #endif
 
-    if (N == 1) {                            /* matrix-vector: its own memory-bound path */
+    // N = 1: streaming path
+    if (N == 1) {
         gemv(A, B, C, M, K);
         return;
     }
 
-    ABanks Abuf;                             /* A tile: P banks, one 32-bit word each */
+    ABanks Abuf;
 #pragma HLS ARRAY_PARTITION variable=Abuf complete dim=1
 #pragma HLS BIND_STORAGE variable=Abuf type=ram_2p impl=bram
 
-    BTile Bt;                                /* B tile: one address returns 16 floats  */
+    BTile Bt;
 #pragma HLS ARRAY_RESHAPE variable=Bt cyclic factor=16 dim=2
 #pragma HLS BIND_STORAGE variable=Bt type=ram_2p impl=uram
 
-    Acc acc;                                 /* accumulators: lane (r,u) owns its own RAM */
+    Acc acc;
 #pragma HLS ARRAY_PARTITION variable=acc complete dim=1
 #pragma HLS ARRAY_PARTITION variable=acc complete dim=3
 #pragma HLS BIND_STORAGE variable=acc type=ram_2p impl=lutram
 
+    // N = 17..32: row-group mode
+    if (N > cfg::W && N <= 2 * cfg::W) {
+        load_B_tile(B, Bt, 0, N, K, N);
+    rown:
+        for (int row0 = 0; row0 < M; row0 += cfg::NR) {
+            const int rows_tile = (M - row0 < cfg::NR) ? (M - row0) : cfg::NR;
+            load_A_tile_n(A, Abuf, row0, rows_tile, K);
+            core_engine_narrow(Abuf, Bt, acc, K);
+        storen:
+            for (int g = 0; g < cfg::G2; g++) {
+                const int rows_g = rows_tile - g * cfg::RS;
+                if (rows_g > 0) {
+                    store_C_tile(C, acc, row0 + g * cfg::RS, (rows_g < cfg::RS) ? rows_g : cfg::RS, 0, N, N, 2 * g);
+                }
+            }
+        }
+        return;
+    }
+
+    // everything else: padded tiled engine
 colt:
     for (int jt = 0; jt < N; jt += cfg::NT) {
-#pragma HLS LOOP_TRIPCOUNT min=1 max=3
         const int nvalid = (N - jt < cfg::NT) ? (N - jt) : cfg::NT;
         load_B_tile(B, Bt, jt, nvalid, K, N);
     rowt:
         for (int row0 = 0; row0 < M; row0 += cfg::RS) {
-#pragma HLS LOOP_TRIPCOUNT min=1 max=4000
             const int rows_valid = (M - row0 < cfg::RS) ? (M - row0) : cfg::RS;
             load_A_tile(A, Abuf, row0, rows_valid, K);
             core_engine(Abuf, Bt, acc, K);
-            store_C_tile(C, acc, row0, rows_valid, jt, nvalid, N);
+            store_C_tile(C, acc, row0, rows_valid, jt, nvalid, N, 0);
         }
     }
 }
-
