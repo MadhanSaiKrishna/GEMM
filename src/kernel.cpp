@@ -1,8 +1,9 @@
 /* kernel.cpp -- tiled float32 GEMM, C[MxN] = A[MxK] * B[KxN], row-major. Contract: gemm(A, B, C, M, K, N), K % 16 == 0, K <= 768, M <= 32000.
  *   N = 1      : own streaming path (gemv), load / multiply-add overlapped with DATAFLOW.
- *   N = 17..32 : row-group interleave (core_engine_narrow), no padded column groups.
+ *   tiled paths: per row tile, two DATAFLOW stages: tile_load (A -> two-slot buffer) and tile_cs (compute, then store C).
+ *   N = 17..32 : row-group interleave inside the same engine (G2 = 8 row groups x 2 column groups), no padded column groups.
  *   other N    : padded tiled engine (RS rows x 16 lanes per cycle, accumulators revisited every 16 cycles).
- * Knobs (one #define each): GEMM_RS = rows per tile, GEMM_G2 = row groups in the N = 17..32 mode. */
+ * Knob: GEMM_RS = rows per tile. */
 #ifndef __SYNTHESIS__
 #include <cassert>
 #endif
@@ -11,10 +12,6 @@
 
 #ifndef GEMM_RS
 #define GEMM_RS 16
-#endif
-
-#ifndef GEMM_G2
-#define GEMM_G2 6
 #endif
 
 namespace cfg {
@@ -26,15 +23,13 @@ constexpr int KMAX = 768;
 constexpr int KW = KMAX / W;
 constexpr int MMAX = 32000;
 constexpr int R1 = 16;
-constexpr int G2 = GEMM_G2;
+constexpr int G2 = NG / 2;
 constexpr int NR = RS * G2;
 constexpr int ceil_pow2(int x, int p = 1) { return p >= x ? p : ceil_pow2(x, p * 2); }
 constexpr int P = ceil_pow2(RS > W ? RS : W);
 }
 
 static_assert(cfg::RS <= cfg::P && cfg::P <= 32, "RS must be at most 32");
-static_assert(2 * cfg::G2 >= 10, "2*G2 slots per k must exceed the 8-cycle float add (use G2 >= 5)");
-static_assert(2 * cfg::G2 <= cfg::NG, "the narrow mode reuses the accumulator RAM depth NG");
 
 static_assert(cfg::KW == 48, "row_base is hard-wired to a 48-word row stride (32 + 16)");
 // A tile: element (row r, k) sits in bank (k + r) mod P at word row_base(r) + k/16 (+ g*RS*KW for row group g).
@@ -72,31 +67,37 @@ inline void a_read_k(const ABanks buf, int goff, int k, float a[cfg::RS]) {
 typedef float BTile[cfg::KMAX][cfg::NT];
 typedef float Acc[cfg::RS][cfg::NG][cfg::W];
 
-// Padded engine: one (k, column group) pair per cycle, RS x 16 MACs; an accumulator is revisited every NG = 16 cycles.
-inline void core_engine(const ABanks Abuf, const BTile Bt, Acc acc, int K) {
+// One engine for both modes, so the multipliers and adders exist once. Every k has NG = 16 slots t, each a different
+// output per lane, so an accumulator is revisited every 16 cycles (> the 8-cycle float add).
+//   padded mode  : slot t = column group t of row group 0.
+//   N = 17..32   : slot t = (row group g = t / 2, column group jg = t % 2); only 2 column groups carry data, so G2 = 8
+//                  row groups fill the other slots. Each output still sums k in order (bit-identical to the padded path).
+inline void core_engine(const ABanks Abuf, const BTile Bt, Acc acc, int K, bool narrow) {
 #pragma HLS INLINE
 initacc:
-    for (int jg = 0; jg < cfg::NG; jg++) {
+    for (int t = 0; t < cfg::NG; t++) {
 #pragma HLS PIPELINE II=1
         for (int r = 0; r < cfg::RS; r++) {
 #pragma HLS UNROLL
             for (int u = 0; u < cfg::W; u++) {
 #pragma HLS UNROLL
-                acc[r][jg][u] = 0.0f;
+                acc[r][t][u] = 0.0f;
             }
         }
     }
 kdim:
     for (int k = 0; k < K; k++) {
     cols:
-        for (int jg = 0; jg < cfg::NG; jg++) {
+        for (int t = 0; t < cfg::NG; t++) {
 #pragma HLS PIPELINE II=1
+            const int g = narrow ? (t >> 1) : 0;
+            const int jg = narrow ? (t & 1) : t;
             float a[cfg::RS];
 #pragma HLS ARRAY_PARTITION variable=a complete
             float b[cfg::W];
 #pragma HLS ARRAY_PARTITION variable=b complete
 
-            a_read_k(Abuf, 0, k, a);
+            a_read_k(Abuf, g * (cfg::RS * cfg::KW), k, a);
             for (int u = 0; u < cfg::W; u++) {
 #pragma HLS UNROLL
                 b[u] = Bt[k][jg * cfg::W + u];
@@ -105,7 +106,7 @@ kdim:
 #pragma HLS UNROLL
                 for (int u = 0; u < cfg::W; u++) {
 #pragma HLS UNROLL
-                    acc[r][jg][u] += a[r] * b[u];
+                    acc[r][t][u] += a[r] * b[u];
                 }
             }
         }
@@ -235,49 +236,6 @@ inline void store_C_tile(float *C, const Acc src, int row0, int rows_valid, int 
                 C[base + c] = src[r][tbase + (c >> 4)][c & (cfg::W - 1)];
             }
             base += N;
-        }
-    }
-}
-
-// N = 17..32: only 2 column groups carry data. Interleave G2 row groups so slot t = 2*g + jg gives each accumulator
-// a revisit distance of 2*G2 (12) > the 8-cycle float add. Each output still sums k in order (bit-identical to the padded path).
-inline void core_engine_narrow(const ABanks Abuf, const BTile Bt, Acc acc, int K) {
-#pragma HLS INLINE
-initn:
-    for (int t = 0; t < 2 * cfg::G2; t++) {
-#pragma HLS PIPELINE II=1
-        for (int r = 0; r < cfg::RS; r++) {
-#pragma HLS UNROLL
-            for (int u = 0; u < cfg::W; u++) {
-#pragma HLS UNROLL
-                acc[r][t][u] = 0.0f;
-            }
-        }
-    }
-kdimn:
-    for (int k = 0; k < K; k++) {
-    slots:
-        for (int t = 0; t < 2 * cfg::G2; t++) {
-#pragma HLS PIPELINE II=1
-            const int g = t >> 1;
-            const int jg = t & 1;
-            float a[cfg::RS];
-#pragma HLS ARRAY_PARTITION variable=a complete
-            float b[cfg::W];
-#pragma HLS ARRAY_PARTITION variable=b complete
-
-            a_read_k(Abuf, g * (cfg::RS * cfg::KW), k, a);
-            for (int u = 0; u < cfg::W; u++) {
-#pragma HLS UNROLL
-                b[u] = Bt[k][jg * cfg::W + u];
-            }
-            for (int r = 0; r < cfg::RS; r++) {
-#pragma HLS UNROLL
-                for (int u = 0; u < cfg::W; u++) {
-#pragma HLS UNROLL
-                    acc[r][t][u] += a[r] * b[u];
-                }
-            }
         }
     }
 }
@@ -466,6 +424,48 @@ storeY_tail:
     }
 }
 
+// One row tile as two stages. gemm() runs them inside a DATAFLOW loop, so the next tile's A loads (into the other half
+// of a two-slot buffer) while this tile computes and stores. The accumulators live inside tile_cs only (one copy, not a
+// channel). narrow = the N = 17..32 row-group mode.
+static void tile_load(const float *A, ABanks abuf, int row0, int M, int K, bool narrow) {
+#pragma HLS INLINE off
+    if (narrow) {
+        load_A_tile_n(A, abuf, row0, (M - row0 < cfg::NR) ? (M - row0) : cfg::NR, K);
+    } else {
+        load_A_tile(A, abuf, row0, (M - row0 < cfg::RS) ? (M - row0) : cfg::RS, K);
+    }
+}
+
+inline void tile_compute(const ABanks abuf, const BTile Bt, Acc acc, int K, bool narrow) {
+#pragma HLS INLINE
+    core_engine(abuf, Bt, acc, K, narrow);
+}
+
+inline void tile_store(float *C, const Acc acc, int row0, int M, int jt, int nvalid, int N, bool narrow) {
+#pragma HLS INLINE
+    // One call site of store_C_tile for both modes: G2 row groups for N = 17..32 (jt = 0, nvalid = N there), one group otherwise.
+    const int rows_tile = (M - row0 < (narrow ? cfg::NR : cfg::RS)) ? (M - row0) : (narrow ? cfg::NR : cfg::RS);
+    const int ngroups = narrow ? cfg::G2 : 1;
+storeg:
+    for (int g = 0; g < ngroups; g++) {
+        const int rows_g = rows_tile - g * cfg::RS;
+        if (rows_g > 0) {
+            store_C_tile(C, acc, row0 + g * cfg::RS, (rows_g < cfg::RS) ? rows_g : cfg::RS, jt, nvalid, N, 2 * g);
+        }
+    }
+}
+
+static void tile_cs(const ABanks abuf, const BTile Bt, float *C, int row0, int M, int K, int jt, int nvalid, int N,
+                    bool narrow) {
+#pragma HLS INLINE off
+    Acc acc;
+#pragma HLS ARRAY_PARTITION variable=acc complete dim=1
+#pragma HLS ARRAY_PARTITION variable=acc complete dim=3
+#pragma HLS BIND_STORAGE variable=acc type=ram_2p impl=lutram
+    tile_compute(abuf, Bt, acc, K, narrow);
+    tile_store(C, acc, row0, M, jt, nvalid, N, narrow);
+}
+
 // depth= only sizes cosim memory and must equal COSIM_{A,B,C}_ELEMS in kernel_tb.cpp.
 extern "C" void gemm(const float *A, const float *B, float *C, int M, int K, int N) {
 
@@ -487,49 +487,25 @@ extern "C" void gemm(const float *A, const float *B, float *C, int M, int K, int
         return;
     }
 
-    ABanks Abuf;
-#pragma HLS ARRAY_PARTITION variable=Abuf complete dim=1
-#pragma HLS BIND_STORAGE variable=Abuf type=ram_2p impl=bram
-
     BTile Bt;
 #pragma HLS ARRAY_RESHAPE variable=Bt cyclic factor=16 dim=2
 #pragma HLS BIND_STORAGE variable=Bt type=ram_2p impl=uram
 
-    Acc acc;
-#pragma HLS ARRAY_PARTITION variable=acc complete dim=1
-#pragma HLS ARRAY_PARTITION variable=acc complete dim=3
-#pragma HLS BIND_STORAGE variable=acc type=ram_2p impl=lutram
-
-    // N = 17..32: row-group mode
-    if (N > cfg::W && N <= 2 * cfg::W) {
-        load_B_tile(B, Bt, 0, N, K, N);
-    rown:
-        for (int row0 = 0; row0 < M; row0 += cfg::NR) {
-            const int rows_tile = (M - row0 < cfg::NR) ? (M - row0) : cfg::NR;
-            load_A_tile_n(A, Abuf, row0, rows_tile, K);
-            core_engine_narrow(Abuf, Bt, acc, K);
-        storen:
-            for (int g = 0; g < cfg::G2; g++) {
-                const int rows_g = rows_tile - g * cfg::RS;
-                if (rows_g > 0) {
-                    store_C_tile(C, acc, row0 + g * cfg::RS, (rows_g < cfg::RS) ? rows_g : cfg::RS, 0, N, N, 2 * g);
-                }
-            }
-        }
-        return;
-    }
-
-    // everything else: padded tiled engine
+    // N = 17..32 uses the row-group mode (one column tile, NR rows per tile); everything else the padded engine.
+    const bool narrow = (N > cfg::W && N <= 2 * cfg::W);
+    const int rstep = narrow ? cfg::NR : cfg::RS;
 colt:
     for (int jt = 0; jt < N; jt += cfg::NT) {
         const int nvalid = (N - jt < cfg::NT) ? (N - jt) : cfg::NT;
         load_B_tile(B, Bt, jt, nvalid, K, N);
     rowt:
-        for (int row0 = 0; row0 < M; row0 += cfg::RS) {
-            const int rows_valid = (M - row0 < cfg::RS) ? (M - row0) : cfg::RS;
-            load_A_tile(A, Abuf, row0, rows_valid, K);
-            core_engine(Abuf, Bt, acc, K);
-            store_C_tile(C, acc, row0, rows_valid, jt, nvalid, N, 0);
+        for (int row0 = 0; row0 < M; row0 += rstep) {
+#pragma HLS DATAFLOW
+            ABanks abuf;
+#pragma HLS ARRAY_PARTITION variable=abuf complete dim=1
+#pragma HLS BIND_STORAGE variable=abuf type=ram_2p impl=bram
+            tile_load(A, abuf, row0, M, K, narrow);
+            tile_cs(abuf, Bt, C, row0, M, K, jt, nvalid, N, narrow);
         }
     }
 }

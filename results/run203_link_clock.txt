@@ -1,0 +1,8 @@
+run203 (hw-105628.log): kernel clock lines from the link log
+240:ADVISORY: [AUTO-FREQ-SCALING-08] For clock hbm_aclk, the auto scaled frequency 450.6 MHz exceeds the original specified frequency. The compiler will select the original specified frequency of 450.0 MHz.
+241:WARNING: [AUTO-FREQ-SCALING-04] One or more timing paths failed timing requirements. The kernel clock ulp_ucs/aclk_kernel_00 has an original frequency equal to 300.000000 MHz. The frequency has been automatically changed to 296.0 MHz to enable proper functionality. The clock Id is 0.
+-- xclbinutil:
+   Requested Freq: 300 MHz
+   Achieved Freq:  296 MHz
+   Requested Freq: 500 MHz
+   Achieved Freq:  500 MHz
